@@ -73,7 +73,7 @@ class GroupCommand(commands.Command):
 
     def _environment_lists(self, patterns):
         def available_pred(env):
-            env_found = self.base.history.group.environment(env.id)
+            env_found = self.base.history.env.get(env.id)
             if env_found:
                 return not env_found.installed
             else:
@@ -229,8 +229,7 @@ class GroupCommand(commands.Command):
         return 0, []
 
     def _mark_install(self, patterns):
-        prst = self.base.history.group
-        q = CompsQuery(self.base.comps, prst,
+        q = CompsQuery(self.base.comps, self.base.history,
                        CompsQuery.GROUPS | CompsQuery.ENVIRONMENTS,
                        CompsQuery.AVAILABLE | CompsQuery.INSTALLED)
         solver = self.base._build_comps_solver()
@@ -248,17 +247,15 @@ class GroupCommand(commands.Command):
 
         if res.environments:
             logger.info(_('Environments marked installed: %s'),
-                        ','.join([ucd(prst.environment(g).ui_name)
+                        ','.join([ucd(self.base.history.env.get(g).ui_name)
                                   for g in res.environments]))
         if res.groups:
             logger.info(_('Groups marked installed: %s'),
-                        ','.join([ucd(prst.group(g).ui_name)
+                        ','.join([ucd(self.base.history.group.get(g).ui_name)
                                   for g in res.groups]))
-        prst.commit()
 
     def _mark_remove(self, patterns):
-        prst = self.base.history.group
-        q = CompsQuery(self.base.comps, prst,
+        q = CompsQuery(self.base.comps, self.base.history,
                        CompsQuery.GROUPS | CompsQuery.ENVIRONMENTS,
                        CompsQuery.INSTALLED)
         solver = self.base._build_comps_solver()
@@ -270,13 +267,12 @@ class GroupCommand(commands.Command):
 
         if res.environments:
             logger.info(_('Environments marked removed: %s'),
-                        ','.join([ucd(prst.environment(e_id).ui_name)
+                        ','.join([ucd(self.base.history.env.get(e_id).ui_name)
                                   for e_id in res.environments]))
         if res.groups:
             logger.info(_('Groups marked removed: %s'),
-                        ','.join([ucd(prst.group(g_id).ui_name)
+                        ','.join([ucd(self.base.history.group.get(g_id).ui_name)
                                   for g_id in res.groups]))
-        prst.commit()
 
     def _mark_subcmd(self, extcmds):
         if extcmds[0] in self._MARK_CMDS:

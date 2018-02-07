@@ -1,5 +1,5 @@
 # Copyright 2005 Duke University
-# Copyright (C) 2012-2016 Red Hat, Inc.
+# Copyright (C) 2012-2018 Red Hat, Inc.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,13 +23,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
+
+import libdnf.swdb
+
 from dnf.comps import CompsQuery
 from dnf.i18n import _, P_, ucd
 from dnf.util import first
 from dnf.db.history import SwdbInterface
 from dnf.yum import misc
 from functools import reduce
-from hawkey import SwdbPkgData, SwdbReason
 import collections
 import datetime
 import dnf.callback
@@ -97,13 +99,15 @@ class Base(object):
         self._tempfile_persistor = None
         self._update_security_filters = {}
         self._allow_erasing = False
-        self._revert_reason = []
         self._repo_set_imported_gpg_keys = set()
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc_args):
+        self.close()
+
+    def __del__(self):
         self.close()
 
     def _add_tempfiles(self, files):
@@ -381,9 +385,6 @@ class Base(object):
         return self._sack
 
     def _finalize_base(self):
-        if not self._trans_success:
-            for pkg, reason in self._revert_reason:
-                self.history.set_reason(pkg, reason)
         self._tempfile_persistor = dnf.persistor.TempfilePersistor(
             self.conf.cachedir)
 
@@ -406,7 +407,7 @@ class Base(object):
                           "'%s'."), "dnf clean packages")
 
         # Do not trigger the lazy creation:
-        if self.history is not None:
+        if self._history is not None:
             self.history.close()
         self._store_persistent_data()
         self._closeRpmDB()
@@ -452,8 +453,7 @@ class Base(object):
             self._goal = None
             if self._sack is not None:
                 self._goal = dnf.goal.Goal(self._sack)
-            if self.history.group_active():
-                self.history.reset_group()
+            self.history.close()
             self._comps_trans = dnf.comps.TransactionBunch()
             self._transaction = None
 
@@ -559,7 +559,6 @@ class Base(object):
                 db_path,
                 root=self.conf.installroot,
                 releasever=releasever,
-                transform=self.conf.transformdb
             )
         return self._history
 
@@ -704,9 +703,11 @@ class Base(object):
             [dnf.yum.rpmtrans.LoggingTransactionDisplay()] + list(display)
 
         if not self.transaction:
-            if self.history.group_active():
-                self._trans_success = True
-                self.history.group.commit()
+            # TODO: no packages changed, but a comps change to be commited
+            # TODO: -> need to detect the change properly and store it to swdb
+#            if self.history.group_active():
+            self._trans_success = True
+#                self.history.group.commit()
             return
 
         logger.info(_('Running transaction check'))
@@ -766,8 +767,8 @@ class Base(object):
         timer()
         self._plugins.unload_removed_plugins(self.transaction)
         self._plugins.run_transaction()
-        if self.history.group_active() and self._trans_success:
-            self.history.group.commit()
+#        if self.history.group_active() and self._trans_success:
+#            self.history.group.commit()
 
     def _trans_error_summary(self, errstring):
         """Parse the error string for 'interesting' errors which can
@@ -809,7 +810,7 @@ class Base(object):
             using_pkgs_pats = list(self.conf.history_record_packages)
             installed_query = self.sack.query().installed()
             using_pkgs = installed_query.filter(name=using_pkgs_pats).run()
-            rpmdbv = self.sack._rpmdb_version(self.history)
+            rpmdbv = self.sack._rpmdb_version()
             lastdbv = self.history.last()
             if lastdbv is not None:
                 lastdbv = lastdbv.end_rpmdb_version
@@ -830,8 +831,6 @@ class Base(object):
                 tsi._propagate_reason(self.history, installonly)
 
             tid = self.history.beg(rpmdbv, using_pkgs, tsis, cmdline)
-            # write out our config and repo data to additional history info
-            self._store_config_in_history(tid)
 
             if self.conf.comment:
                 # write out user provided comment to history info
@@ -916,6 +915,10 @@ class Base(object):
             self._verify_transaction(cb.verify_tsi_package)
 
     def _verify_transaction(self, verify_pkg_cb=None):
+        self._trans_success = True
+        # TODO: verify if we need transaction verification at all
+        # we should trust RPM returning correct error codes
+        return
         """Check that the transaction did what was expected, and
         propagate external history information.  Output error messages
         if the transaction did not do what was expected.
@@ -986,21 +989,23 @@ class Base(object):
                     except Exception:
                         pass
 
+            # TODO:
+            '''
             loginuid = misc.getloginuid()
+            '''
+            loginuid = None
             if tsi.op_type in (dnf.transaction.DOWNGRADE,
                                dnf.transaction.REINSTALL,
                                dnf.transaction.UPGRADE):
                 opo = tsi.erased
-                opo_pkg_info = self.history.package_data(opo)
-                if opo_pkg_info and opo_pkg_info.installed_by:
-                    pkg_info.installed_by = opo_pkg_info.installed_by
-                if loginuid is not None:
-                    pkg_info.changed_by = str(loginuid)
+                # TODO: remove, not needed?
+                #opo_pkg_info = self.history.package_data(opo)
+                #if opo_pkg_info and opo_pkg_info.installed_by:
+                #    pkg_info.installed_by = opo_pkg_info.installed_by
+                #if loginuid is not None:
+                #    pkg_info.changed_by = str(loginuid)
             elif loginuid is not None:
                 pkg_info.installed_by = str(loginuid)
-
-            if self.conf.history_record:
-                self.history.sync_alldb(po, pkg_info)
 
         just_installed = self.sack.query().filterm(pkg=self.transaction.install_set)
         for rpo in self.transaction.remove_set:
@@ -1015,7 +1020,7 @@ class Base(object):
                     continue
             count = display_banner(rpo, count)
         if self._record_history():
-            rpmdbv = rpmdb_sack._rpmdb_version(self.history)
+            rpmdbv = rpmdb_sack._rpmdb_version()
             self.history.end(rpmdbv, 0)
         timer()
         self._trans_success = True
@@ -1416,10 +1421,14 @@ class Base(object):
 
         for pkg in query:
             reason = self.history.reason(pkg)
-            self.history.set_reason(pkg, SwdbReason.DEP)
-            self._revert_reason.append((pkg, reason))
-        unneeded_pkgs = self.sack.query()._unneeded(self.history.swdb, debug_solver=False)
+            if reason != libdnf.swdb.TransactionItemReason_GROUP:
+                continue
+            self.history.set_reason(pkg, libdnf.swdb.TransactionItemReason_DEPENDENCY)
 
+        # TODO: create a new filter in libdnf: swdb.filter_removable(query)
+        unneeded_pkgs = [i for i in self.sack.query() if self.history.group.is_removable_pkg(i.name)]
+
+        unneeded_pkgs = self.sack.query().filter(pkg=unneeded_pkgs)
         remove_packages = query.intersection(unneeded_pkgs)
         if remove_packages:
             sltr = dnf.selector.Selector(self.sack)
@@ -1494,9 +1503,9 @@ class Base(object):
             try:
                 return self.history.reason(q[0])
             except AttributeError:
-                return SwdbReason.UNKNOWN
+                return libdnf.swdb.TransactionItemReason_UNKNOWN
 
-        return dnf.comps.Solver(self.history.group, self._comps, reason_fn)
+        return dnf.comps.Solver(self.history, self._comps, reason_fn)
 
     def environment_install(self, env_id, types, exclude=None, strict=True):
         solver = self._build_comps_solver()
@@ -1558,7 +1567,7 @@ class Base(object):
         return self._add_comps_trans(trans)
 
     def env_group_install(self, patterns, types, strict=True):
-        q = CompsQuery(self.comps, self.history.group,
+        q = CompsQuery(self.comps, self.history,
                        CompsQuery.ENVIRONMENTS | CompsQuery.GROUPS,
                        CompsQuery.AVAILABLE | CompsQuery.INSTALLED)
         cnt = 0
@@ -1584,7 +1593,7 @@ class Base(object):
         return self._add_comps_trans(trans)
 
     def env_group_remove(self, patterns):
-        q = CompsQuery(self.comps, self.history.group,
+        q = CompsQuery(self.comps, self.history,
                        CompsQuery.ENVIRONMENTS | CompsQuery.GROUPS,
                        CompsQuery.INSTALLED)
         try:
@@ -1594,21 +1603,21 @@ class Base(object):
             raise dnf.exceptions.Error(_('No groups marked for removal.'))
         cnt = 0
         for env in res.environments:
-            cnt += self.environment_remove(env)
+            cnt += self.environment_remove(env.getCompsEnvironmentItem().getEnvironmentId())
         for grp in res.groups:
-            cnt += self.group_remove(grp)
+            cnt += self.group_remove(grp.getCompsGroupItem().getGroupId())
         return cnt
 
     def env_group_upgrade(self, patterns):
-        q = CompsQuery(self.comps, self.history.group,
+        q = CompsQuery(self.comps, self.history,
                        CompsQuery.GROUPS | CompsQuery.ENVIRONMENTS,
                        CompsQuery.INSTALLED)
         res = q.get(*patterns)
         cnt = 0
         for env in res.environments:
-            cnt += self.environment_upgrade(env)
+            cnt += self.environment_upgrade(env.getCompsEnvironmentItem().getEnvironmentId())
         for grp in res.groups:
-            cnt += self.group_upgrade(grp)
+            cnt += self.group_upgrade(grp.getCompsGroupItem().getGroupId())
         if not cnt:
             msg = _('No group marked for upgrade.')
             raise dnf.cli.CliError(msg)
@@ -1878,8 +1887,7 @@ class Base(object):
                 raise dnf.exceptions.Error(_('No packages marked for removal.'))
 
         else:
-            pkgs = self.sack.query()._unneeded(self.history.swdb,
-                                               debug_solver=self.conf.debug_solver)
+            pkgs = [i for i in self.sack.query() if self.history.group.is_removable_pkg(i.name)]
             for pkg in pkgs:
                 self.package_remove(pkg)
 
