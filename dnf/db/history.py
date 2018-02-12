@@ -183,11 +183,6 @@ class SwdbInterface(object):
         """ Lazy initialize Swdb object """
         if not self._swdb:
             dirname = os.path.join(self._root, self._db_dir)
-            try:
-                # TODO rewrite this to C++
-                os.makedirs(dirname)
-            except:
-                pass
             path = os.path.join(dirname, "sw.db")
             self._swdb = libdnf.swdb.Swdb(path)
             # TODO: chroot support
