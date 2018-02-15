@@ -1,6 +1,6 @@
 For Fedora 
 ```bash
-$ sudo dnf install python3-varlink libvarlink-util
+$ sudo dnf install --enablerepo rawhide python3-varlink libvarlink-util
 $ sudo dnf update https://kojipkgs.fedoraproject.org/packages/python-varlink/12/1.fc28/noarch/python3-varlink-12-1.fc28.noarch.rpm
 $ git clone -b 2.7.5 https://github.com/haraldh/dnf.git
 $ cd dnf
