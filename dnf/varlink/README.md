@@ -6,7 +6,39 @@ $ git clone -b 2.7.5 https://github.com/haraldh/dnf.git
 $ cd dnf
 $ cmake . -DPYTHON_DESIRED:str=3 -DWITH_MAN=0 -DPYTHON_EXECUTABLE=/usr/bin/python3
 $ make
-$ ./bin/dnf-varlink-3 unix:@test &
+```
+Now we can talk to dnf with varlink
+```bash
+$ varlink call exec:./bin/dnf-varlink-3/com.redhat.packages.List '{}' | head -20
+{
+  "packages": [
+    {
+      "name": "ConsoleKit-libs",
+      "version": {
+        "architecture": "x86_64",
+        "release": "9.fc22",
+        "version": "0.4.5"
+      }
+    },
+    {
+      "name": "GConf2",
+      "version": {
+        "architecture": "x86_64",
+        "release": "19.fc27",
+        "version": "3.2.6"
+      }
+    },
+    {
+      "name": "GConf2-devel",
+```
+
+Or start dnf as a server:
+```bash
+$ ./bin/dnf-varlink-3 unix:@test
+```
+
+And talk to the unix socket
+```bash
 $ varlink call unix:@test/com.redhat.packages.List '{}'
 {
   "packages": [
