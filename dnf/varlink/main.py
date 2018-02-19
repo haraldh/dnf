@@ -19,7 +19,6 @@
 #
 
 
-import itertools
 import logging
 
 logger = logging.getLogger('dnf')
@@ -28,14 +27,17 @@ import os
 import stat
 
 import dnf
+import dnf.cli
 import varlink
+import itertools
 from types import SimpleNamespace
 
 service = varlink.Service(
     vendor='Red Hat',
     product='Packages',
     version='1',
-    interface_dir=os.path.dirname(__file__)
+    interface_dir=os.path.dirname(__file__),
+    namespaced=True
 )
 
 
@@ -46,87 +48,75 @@ class ActionFailed(varlink.VarlinkError):
                                        'parameters': {'field': reason}})
 
 
-class BaseVarlink(dnf.Base):
-    """This is the base class for yum cli."""
-
-    def __init__(self, conf=None):
-        conf = conf or dnf.conf.Conf()
-        super(BaseVarlink, self).__init__(conf=conf)
-
-    def returnPkgLists(self, pkgnarrow='all', patterns=None,
-                       installed_available=False, reponame=None):
-        """Return a :class:`dnf.yum.misc.GenericHolder` object containing
-        lists of package objects that match the given names or wildcards.
-
-        :param pkgnarrow: a string specifying which types of packages
-           lists to produce, such as updates, installed, available, etc.
-        :param patterns: a list of names or wildcards specifying
-           packages to list
-        :param installed_available: whether the available package list
-           is present as .hidden_available when doing all, available,
-           or installed
-        :param reponame: limit packages list to the given repository
-
-        :return: a :class:`dnf.yum.misc.GenericHolder` instance with the
-           following lists defined::
-
-             available = list of packageObjects
-             installed = list of packageObjects
-             upgrades = tuples of packageObjects (updating, installed)
-             extras = list of packageObjects
-             obsoletes = tuples of packageObjects (obsoleting, installed)
-             recent = list of packageObjects
-        """
-
-        done_hidden_available = False
-        done_hidden_installed = False
-        if installed_available and pkgnarrow == 'installed':
-            done_hidden_available = True
-            pkgnarrow = 'all'
-        elif installed_available and pkgnarrow == 'available':
-            done_hidden_installed = True
-            pkgnarrow = 'all'
-
-        ypl = self._do_package_lists(
-            pkgnarrow, patterns, ignore_case=True, reponame=reponame)
-        if self.conf.showdupesfromrepos:
-            ypl.available += ypl.reinstall_available
-
-        if installed_available:
-            ypl.hidden_available = ypl.available
-            ypl.hidden_installed = ypl.installed
-        if done_hidden_available:
-            ypl.available = []
-        if done_hidden_installed:
-            ypl.installed = []
-        return ypl
-
-
 @service.interface('com.redhat.packages')
 class Example:
     def List(self, packages=None, _more=False):
+        def search_pattern(x):
+            p = x.name
+            if hasattr(x, "version"):
+                # FIXME:
+                if hasattr(x.version, "version"):
+                    p += "-" + x.version.version
+
+                    if hasattr(x.version, "release"):
+                        p += "-" + x.version.release
+                    else:
+                        p += "-*"
+
+                if hasattr(x.version, "architecture"):
+                    p += "." + x.version.architecture
+            return p
+
+        def dnf2varlink_packages(p):
+            r = SimpleNamespace()
+            r.version = SimpleNamespace()
+            r.name = p.name
+            if p.e > 0:
+                r.version.epoch = p.e
+            r.version.version = p.v
+            r.version.release = p.r
+            r.version.architecture = p.arch
+            return r
+
         if _more:
             return varlink.InvalidParameter('more')
 
-        base = BaseVarlink()
+        with dnf.Base() as base:
+            cli = dnf.cli.Cli(base)
 
-        if not packages:
-            base.fill_sack(load_system_repo='auto',
-                           load_available_repos=True)
+            cli._read_conf_file()
+            base.init_plugins(cli=cli)
+            base.pre_configure_plugins()
+            base.read_all_repos()
+            base.configure_plugins()
+            base.fill_sack()
 
-            lists = base.returnPkgLists(pkgnarrow='installed')
-            pkgs = itertools.chain.from_iterable(lists.all_lists().values())
+            patterns = None
+            all_or_installed = "all"
+            if packages and len(packages) > 0:
+                patterns = list(map((lambda x: search_pattern(x)), packages))
+                # FIXME: select source for every package
+                if (hasattr(packages[0], "installed") and packages[0].installed
+                        and hasattr(packages[0], "available") and packages[0].available):
+                    all_or_installed = "all"
+                elif hasattr(packages[0], "installed") and packages[0].installed:
+                    all_or_installed = "installed"
+                elif hasattr(packages[0], "available") and packages[0].available:
+                    all_or_installed = "available"
+
+            lists = base._do_package_lists(all_or_installed, patterns, ignore_case=True, reponame=None)
             ret = []
-            for p in pkgs:
-                r = SimpleNamespace()
-                r.version = SimpleNamespace()
-                r.name = p.name
-                if p.e > 0:
-                    r.version.epoch = p.e
-                r.version.version = p.v
-                r.version.release = p.r
-                r.version.architecture = p.arch
+            seen = []
+            for p in itertools.chain.from_iterable(lists.all_lists().values()):
+                if p in seen:
+                    continue
+
+                r = dnf2varlink_packages(p)
+                r.installed = p in lists.installed
+                r.available = (p in lists.available) or (p in lists.reinstall_available)
                 ret.append(r)
+                seen.append(p)
+
         return {"packages": ret}
 
 
@@ -144,7 +134,6 @@ def main(args):
         pass
 
     with varlink.SimpleServer(service) as s:
-        print("Listening on", args[0])
         try:
             s.serve(args[0], listen_fd=listen_fd)
         except KeyboardInterrupt:
