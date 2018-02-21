@@ -1,4 +1,4 @@
-# __init__.py
+# main.py
 # dnf.varlink
 #
 # Copyright (C) 2018 Red Hat, Inc.
@@ -41,16 +41,17 @@ service = varlink.Service(
 )
 
 
-class ActionFailed(varlink.VarlinkError):
+class ListPatternError(varlink.VarlinkError):
     def __init__(self, reason):
         varlink.VarlinkError.__init__(self,
-                                      {'error': 'com.redhat.packages.ActionFailed',
-                                       'parameters': {'field': reason}})
+                                      {'error': 'com.redhat.packages.ListPatternError'})
 
 
 @service.interface('com.redhat.packages')
-class Example:
+class DnfVarlinkService:
     def List(self, packages=None, _more=False):
+        global base
+
         def search_pattern(x):
             p = x.name
             if hasattr(x, "version"):
@@ -81,46 +82,40 @@ class Example:
         if _more:
             return varlink.InvalidParameter('more')
 
-        with dnf.Base() as base:
-            cli = dnf.cli.Cli(base)
-
-            cli._read_conf_file()
-            base.init_plugins(cli=cli)
-            base.pre_configure_plugins()
-            base.read_all_repos()
-            base.configure_plugins()
-            base.fill_sack()
-
-            patterns = None
-            all_or_installed = "all"
-            if packages and len(packages) > 0:
+        patterns = None
+        all_or_installed = "all"
+        if packages and len(packages) > 0:
+            try:
                 patterns = list(map((lambda x: search_pattern(x)), packages))
-                # FIXME: select source for every package
-                if (hasattr(packages[0], "installed") and packages[0].installed
-                        and hasattr(packages[0], "available") and packages[0].available):
-                    all_or_installed = "all"
-                elif hasattr(packages[0], "installed") and packages[0].installed:
-                    all_or_installed = "installed"
-                elif hasattr(packages[0], "available") and packages[0].available:
-                    all_or_installed = "available"
+            except:
+                return ListPatternError()
+            # FIXME: select source for every package
+            if (hasattr(packages[0], "installed") and packages[0].installed
+                    and hasattr(packages[0], "available") and packages[0].available):
+                all_or_installed = "all"
+            elif hasattr(packages[0], "installed") and packages[0].installed:
+                all_or_installed = "installed"
+            elif hasattr(packages[0], "available") and packages[0].available:
+                all_or_installed = "available"
 
-            lists = base._do_package_lists(all_or_installed, patterns, ignore_case=True, reponame=None)
-            ret = []
-            seen = []
-            for p in itertools.chain.from_iterable(lists.all_lists().values()):
-                if p in seen:
-                    continue
+        lists = base._do_package_lists(all_or_installed, patterns, ignore_case=True, reponame=None)
+        ret = []
+        seen = []
+        for p in itertools.chain.from_iterable(lists.all_lists().values()):
+            if p in seen:
+                continue
 
-                r = dnf2varlink_packages(p)
-                r.installed = p in lists.installed
-                r.available = (p in lists.available) or (p in lists.reinstall_available)
-                ret.append(r)
-                seen.append(p)
+            r = dnf2varlink_packages(p)
+            r.installed = p in lists.installed
+            r.available = (p in lists.available) or (p in lists.reinstall_available)
+            ret.append(r)
+            seen.append(p)
 
         return {"packages": ret}
 
 
 def main(args):
+    global base
     if len(args) < 1:
         print('missing address parameter')
         return 1
@@ -133,7 +128,15 @@ def main(args):
     except OSError:
         pass
 
-    with varlink.SimpleServer(service) as s:
+    with varlink.SimpleServer(service) as s, dnf.Base() as base:
+        cli = dnf.cli.Cli(base)
+        cli._read_conf_file()
+        base.init_plugins(cli=cli)
+        base.pre_configure_plugins()
+        base.read_all_repos()
+        base.configure_plugins()
+        base.fill_sack()
+
         try:
             s.serve(args[0], listen_fd=listen_fd)
         except KeyboardInterrupt:

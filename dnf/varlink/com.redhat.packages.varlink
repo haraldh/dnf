@@ -54,6 +54,7 @@ method Remove(packages: Package[], dryrun: bool) -> (
 # List updates for matching packages
 method ListUpdates(packages: Package[]) -> (updates: UpdateInfo[])
 
+error ListPatternError()
 error UnknownPackage(packages: Package[])
 error InstallationError(packages: Package[])
 error Busy()
