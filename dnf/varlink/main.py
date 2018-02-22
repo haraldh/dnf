@@ -48,9 +48,18 @@ class ListPatternError(varlink.VarlinkError):
 
 
 @service.interface('com.redhat.packages')
-class DnfVarlinkService:
+class DnfVarlinkService(dnf.Base):
+    def __init__(self):
+        super().__init__()
+        cli = dnf.cli.Cli(self)
+        cli._read_conf_file()
+        self.init_plugins(cli=cli)
+        self.pre_configure_plugins()
+        self.read_all_repos()
+        self.configure_plugins()
+        self.fill_sack()
+
     def List(self, packages=None, _more=False):
-        global base
 
         def search_pattern(x):
             p = x.name
@@ -98,7 +107,7 @@ class DnfVarlinkService:
             elif hasattr(packages[0], "available") and packages[0].available:
                 all_or_installed = "available"
 
-        lists = base._do_package_lists(all_or_installed, patterns, ignore_case=True, reponame=None)
+        lists = self._do_package_lists(all_or_installed, patterns, ignore_case=True, reponame=None)
         ret = []
         seen = []
         for p in itertools.chain.from_iterable(lists.all_lists().values()):
@@ -115,7 +124,6 @@ class DnfVarlinkService:
 
 
 def main(args):
-    global base
     if len(args) < 1:
         print('missing address parameter')
         return 1
@@ -128,15 +136,7 @@ def main(args):
     except OSError:
         pass
 
-    with varlink.SimpleServer(service) as s, dnf.Base() as base:
-        cli = dnf.cli.Cli(base)
-        cli._read_conf_file()
-        base.init_plugins(cli=cli)
-        base.pre_configure_plugins()
-        base.read_all_repos()
-        base.configure_plugins()
-        base.fill_sack()
-
+    with varlink.SimpleServer(service) as s:
         try:
             s.serve(args[0], listen_fd=listen_fd)
         except KeyboardInterrupt:
