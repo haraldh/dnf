@@ -24,8 +24,8 @@ import logging
 logger = logging.getLogger('dnf')
 
 import os
-import stat
-
+import getopt
+import sys
 import dnf
 import dnf.cli
 import varlink
@@ -45,6 +45,10 @@ class ListPatternError(varlink.VarlinkError):
     def __init__(self, reason):
         varlink.VarlinkError.__init__(self,
                                       {'error': 'com.redhat.packages.ListPatternError'})
+
+
+class ServiceRequestHandler(varlink.RequestHandler):
+    service = service
 
 
 @service.interface('com.redhat.packages')
@@ -123,22 +127,41 @@ class DnfVarlinkService(dnf.Base):
         return {"packages": ret}
 
 
-def main(args):
-    if len(args) < 1:
-        print('missing address parameter')
-        return 1
-
-    listen_fd = None
-
-    try:
-        if stat.S_ISSOCK(os.fstat(3).st_mode):
-            listen_fd = 3
-    except OSError:
-        pass
-
-    with varlink.SimpleServer(service) as s:
+def run_server(address):
+    with varlink.ThreadingServer(address, ServiceRequestHandler) as server:
+        print("Listening on", server.server_address)
         try:
-            s.serve(args[0], listen_fd=listen_fd)
+            server.serve_forever()
         except KeyboardInterrupt:
             pass
-    return 0
+
+
+def usage():
+    print('Usage: %s [--varlink=<varlink address>]' % sys.argv[0], file=sys.stderr)
+
+
+def main(sysargs):
+    print("main", file=sys.stderr)
+    try:
+        opts, args = getopt.getopt(sysargs, "", ["help", "varlink="])
+    except getopt.GetoptError:
+        usage()
+        sys.exit(2)
+
+    address = None
+    client_mode = False
+
+    for opt, arg in opts:
+        if opt == "--help":
+            usage()
+            sys.exit(0)
+        elif opt == "--varlink":
+            address = arg
+
+    if not address:
+        usage()
+        sys.exit(2)
+
+    run_server(address)
+
+    sys.exit(0)
